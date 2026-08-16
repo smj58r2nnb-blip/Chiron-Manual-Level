@@ -1,0 +1,98 @@
+name: Build Chiron Manual 25-Point Firmware
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Knutwurst 1.6.0
+        uses: actions/checkout@v4
+        with:
+          repository: knutwurst/Marlin-2-0-x-Anycubic-i3-MEGA-S
+          ref: 1.6.0
+          path: firmware
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Patch Chiron for manual 5x5 bilinear leveling
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          cfg = Path("firmware/Marlin/Configuration.h")
+          text = cfg.read_text(encoding="utf-8")
+
+          old_manual = """#if NONE(KNUTWURST_BLTOUCH, KNUTWURST_CHIRON)
+            #define PROBE_MANUALLY
+          #endif"""
+          new_manual = """#if DISABLED(KNUTWURST_BLTOUCH)
+            #define PROBE_MANUALLY
+          #endif"""
+
+          if old_manual not in text:
+              raise SystemExit("Could not find PROBE_MANUALLY block in Knutwurst 1.6.0 Configuration.h")
+          text = text.replace(old_manual, new_manual, 1)
+
+          old_servo = """#if ENABLED(KNUTWURST_CHIRON)
+            #define Z_PROBE_SERVO_NR 0       // Defaults to SERVO 0 connector.
+            #define Z_SERVO_ANGLES { 70, 0 } // Z Servo Deploy and Stow angles
+          #endif"""
+          new_servo = """#if ENABLED(KNUTWURST_CHIRON) && DISABLED(PROBE_MANUALLY)
+            #define Z_PROBE_SERVO_NR 0       // Defaults to SERVO 0 connector.
+            #define Z_SERVO_ANGLES { 70, 0 } // Z Servo Deploy and Stow angles
+          #endif"""
+
+          if old_servo not in text:
+              raise SystemExit("Could not find Chiron servo-probe block in Knutwurst 1.6.0 Configuration.h")
+          text = text.replace(old_servo, new_servo, 1)
+
+          # The normal Chiron target already uses bilinear leveling and a 5x5 grid.
+          required = [
+              "#define AUTO_BED_LEVELING_BILINEAR",
+              "#define GRID_MAX_POINTS_X 5",
+          ]
+          for item in required:
+              if item not in text:
+                  raise SystemExit(f"Expected setting missing: {item}")
+
+          cfg.write_text(text, encoding="utf-8")
+
+          print("Patched Configuration.h:")
+          print(" - CHIRON stock target retained")
+          print(" - PROBE_MANUALLY enabled")
+          print(" - Chiron servo probe disabled during manual probing")
+          print(" - AUTO_BED_LEVELING_BILINEAR retained")
+          print(" - 5x5 / 25-point grid retained")
+          PY
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip
+          pip install platformio
+
+      - name: Compile CHIRON firmware
+        working-directory: firmware
+        run: platformio run --environment CHIRON
+
+      - name: Verify HEX exists
+        run: |
+          test -f firmware/.pio/build/CHIRON/firmware.hex
+          cp firmware/.pio/build/CHIRON/firmware.hex CHIRON_MANUAL_25_POINT_v1.6.0.hex
+          ls -lh CHIRON_MANUAL_25_POINT_v1.6.0.hex
+
+      - name: Upload firmware HEX
+        uses: actions/upload-artifact@v4
+        with:
+          name: CHIRON_MANUAL_25_POINT_v1.6.0
+          path: CHIRON_MANUAL_25_POINT_v1.6.0.hex
+          retention-days: 30
